@@ -12,6 +12,9 @@
 
 #include <math.h>
 
+//Register location of Magnetometer data
+#define MAG_DATA_REG 0x49
+
 //Pins to control right motor
 #define rightForward 5
 #define rightBackward 4
@@ -30,6 +33,7 @@
 #define leftEncoderPin2 21
 
 #define DEFAULT_MOVEMENT_SPEED 100
+#define TURNING_MOVEMENT_SPEED 50
 
 #define STOPPED 0
 #define FORWARD 1
@@ -55,8 +59,29 @@ double kp = 0.27, ki = 0.85, kd = 0;   //Values for the PID
 */
 PID leftPID(&left_encoder_val, &left_speed_val, &right_encoder_val, kp, ki, kd, DIRECT);
 
+class Magnetometer : public MPU9250
+{
+  public:
+    Magnetometer() : MPU9250(SPI, 53)
+    {
+      int *speedSetting = (int *)&SPI_HS_CLOCK;
+      *speedSetting = 20000000;
+    }
+    void readMagData()
+    {
+      _useSPIHS = true;
+      readRegisters(MAG_DATA_REG, 4, _buffer);
+
+      _hxcounts = (((int16_t)_buffer[1]) << 8) | _buffer[0];
+      _hycounts = (((int16_t)_buffer[3]) << 8) | _buffer[2];
+
+      _hx = (((float)(_hxcounts) * _magScaleX) - _hxb) * _hxs;
+      _hy = (((float)(_hycounts) * _magScaleY) - _hyb) * _hys;
+    }
+};
+
 int imuStatus;
-MPU9250 IMU(SPI, 53);
+Magnetometer IMU;
 float magXBias = 20.43;
 float magXScale = 0.93;
 float magYBias = 2.77;
@@ -132,14 +157,17 @@ bool pivotRightFifteen()
 {
   resetEncoders();
   globalMovementState = RIGHT_TURN;
-  left_speed_val = DEFAULT_MOVEMENT_SPEED;
-  right_speed_val = DEFAULT_MOVEMENT_SPEED;
-  
+  left_speed_val = TURNING_MOVEMENT_SPEED;
+  right_speed_val = TURNING_MOVEMENT_SPEED;
+
+  leftPID.SetMode(MANUAL);
+
+  IMU.readMagData();
   float oldMagX = IMU.getMagX_uT();
   float oldMagY = IMU.getMagY_uT();
   float oldMagZ = IMU.getMagZ_uT();
   double oldAngle = atan2(oldMagY, oldMagX);
-  oldAngle = (oldAngle * 180.0)/M_PI;
+  oldAngle = (oldAngle * 180.0) / M_PI;
 
   float currentMagX = oldMagX;
   float currentMagY = oldMagY;
@@ -147,24 +175,24 @@ bool pivotRightFifteen()
   double currentAngle = oldAngle;
 
   analogWrite(rightForward, 0);
-  analogWrite(rightBackward, right_speed_val);
-  analogWrite(leftForward, left_speed_val);
+  analogWrite(rightBackward, TURNING_MOVEMENT_SPEED);
+  analogWrite(leftForward, TURNING_MOVEMENT_SPEED);
   analogWrite(leftBackward, 0);
 
-  while (fabs(oldAngle - currentAngle) <= 24)
+  while (fabs(oldAngle - currentAngle) <= 25)
   {
-    IMU.readSensor();
+    IMU.readMagData();
     currentMagX = IMU.getMagX_uT();
     currentMagY = IMU.getMagY_uT();
     currentMagZ = IMU.getMagZ_uT();
     currentAngle = atan2(currentMagY, currentMagX);
-    currentAngle = (currentAngle * 180.0)/M_PI;
-    Serial.print("Old Angle: ");
-    Serial.println(oldAngle);
-    Serial.print("CurrentAngle: ");
+    currentAngle = (currentAngle * 180.0) / M_PI;
+    //    Serial.print("Old Angle: ");
+    //    Serial.println(oldAngle);
+    //    Serial.print("CurrentAngle: ");
     Serial.println(currentAngle);
   }
-
+  leftPID.SetMode(MANUAL);
   stopMovement();
   return true;
 }
@@ -324,11 +352,24 @@ void pollIrSensor()
   }
 }
 
-
-/* Sets all pins as inputs or outputs
-   Encoder pins correspond to RPMs for each motor, we aren’t sure
-   which pins go with which encoders yet
-*/
+//void readMagData()
+//{
+//  int16_t magXRaw;
+//  int16_t magYRaw;
+//  int16_t magZRaw;
+//
+//  IMU._useSPIHS = true;
+//
+//  char buff[6];
+//  IMU.readRegisters(MAG_DATA_REG, 6, buff);
+//
+//  magXRaw = (((int16_t)buff[0]) << 8) | buff[1];
+//  magYRaw = (((int16_t)buff[2]) << 8) | buff[3];
+//  magZRaw = (((int16_t)buff[4]) << 8) | buff[5];
+//
+//  IMU._hx = (((float)(magXRaw) * IMU.getMagScaleFactorX() - IMU.getMagBiasX_uT()) * 1.0f;
+//
+//}
 
 void setup() {
   Serial.begin(115200);
@@ -362,11 +403,10 @@ void setup() {
 }
 
 //Main loop
-void loop() 
+void loop()
 {
   left_encoder_val = leftEncoderCount();
   right_encoder_val = rightEncoderCount();
   leftPID.Compute();
   pollIrSensor();
-  IMU.readSensor();
 }
