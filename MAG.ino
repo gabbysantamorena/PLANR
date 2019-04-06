@@ -5,15 +5,20 @@
 
 #include <CPE123_EncoderLib_Fall_17.h>
 #include <CPE123_Fall17.h>
+
 #include <PID_v1.h>
 
-#include <MPU9250.h>
 #include <SPI.h>
+#include <MPU9250.h>
 
 #include <math.h>
 
+#include <ros.h>
+#include <std_msgs/Int16.h>
+
 //Register location of Magnetometer data
 #define MAG_DATA_REG 0x49
+#define SENSOR_SAMPLE_RATE_DIVIDER_REG 0x19
 
 //Pins to control right motor
 #define rightForward 5
@@ -46,7 +51,8 @@ int RECV_PIN = 12;
 IRrecv irrecv(RECV_PIN);
 decode_results results;
 
-double left_speed_val = 0, right_speed_val = 0, left_encoder_val = 0, right_encoder_val = 0;
+double left_speed_val = 0, right_speed_val = 0;
+double left_encoder_val = 0, right_encoder_val = 0;
 //double kp = 10.0, ki = 0, kd = 0;   //Values for the PID
 
 double kp = 0.27, ki = 0.85, kd = 0;   //Values for the PID
@@ -59,13 +65,29 @@ double kp = 0.27, ki = 0.85, kd = 0;   //Values for the PID
 */
 PID leftPID(&left_encoder_val, &left_speed_val, &right_encoder_val, kp, ki, kd, DIRECT);
 
+ros::NodeHandle node;
+
+std_msgs::Int16 lwheel_msg;
+ros::Publisher lwheel("lwheel", &lwheel_msg);
+
+std_msgs::Int16 rwheel_msg;
+ros::Publisher rwheel("rwheel", &rwheel_msg);
+
+
 class Magnetometer : public MPU9250
 {
   public:
     Magnetometer() : MPU9250(SPI, 53)
     {
-      int *speedSetting = (int *)&SPI_HS_CLOCK;
-      *speedSetting = 20000000;
+
+
+    }
+    void applySettings()
+    {
+//      int *speedSetting = (int *)&SPI_HS_CLOCK;
+//      *speedSetting = 15000000;
+//      _useSPIHS = true;
+//      writeRegister(SENSOR_SAMPLE_RATE_DIVIDER_REG, 0);
     }
     void readMagData()
     {
@@ -115,47 +137,8 @@ bool moveBackward(double right_speed_val, double left_speed_val, int distance)
   return true;
 }
 
-bool pivotLeftNinety()
-{
-  resetEncoders();
-  globalMovementState = LEFT_TURN;
-  left_speed_val = DEFAULT_MOVEMENT_SPEED;
-  right_speed_val = DEFAULT_MOVEMENT_SPEED;
-
-  analogWrite(rightForward, right_speed_val);
-  analogWrite(rightBackward, 0);
-
-  analogWrite(leftForward, 0);
-  analogWrite(leftBackward, left_speed_val);
-
-  while (rightEncoderCount() < 1420);
-
-  stopMovement();
-  return true;
-}
-
-bool pivotRightNinety()
-{
-  resetEncoders();
-  globalMovementState = RIGHT_TURN;
-  left_speed_val = DEFAULT_MOVEMENT_SPEED;
-  right_speed_val = DEFAULT_MOVEMENT_SPEED;
-
-  analogWrite(rightForward, 0);
-  analogWrite(rightBackward, right_speed_val);
-
-  analogWrite(leftForward, left_speed_val);
-  analogWrite(leftBackward, 0);
-
-  while (rightEncoderCount() < 1420);
-
-  stopMovement();
-  return true;
-}
-
 bool pivotRightFifteen()
 {
-  resetEncoders();
   globalMovementState = RIGHT_TURN;
   left_speed_val = TURNING_MOVEMENT_SPEED;
   right_speed_val = TURNING_MOVEMENT_SPEED;
@@ -179,7 +162,7 @@ bool pivotRightFifteen()
   analogWrite(leftForward, TURNING_MOVEMENT_SPEED);
   analogWrite(leftBackward, 0);
 
-  while (fabs(oldAngle - currentAngle) <= 25)
+  while (fabs(oldAngle - currentAngle) <= 15)
   {
     IMU.readMagData();
     currentMagX = IMU.getMagX_uT();
@@ -187,19 +170,32 @@ bool pivotRightFifteen()
     currentMagZ = IMU.getMagZ_uT();
     currentAngle = atan2(currentMagY, currentMagX);
     currentAngle = (currentAngle * 180.0) / M_PI;
+    if (currentAngle == oldAngle)
+    {
+      analogWrite(rightForward, 0);
+      analogWrite(rightBackward, 0);
+      analogWrite(leftForward, 0);
+      analogWrite(leftBackward, 0);
+    }
+    else
+    {
+      analogWrite(rightForward, 0);
+      analogWrite(rightBackward, TURNING_MOVEMENT_SPEED);
+      analogWrite(leftForward, TURNING_MOVEMENT_SPEED);
+      analogWrite(leftBackward, 0);
+    }
     //    Serial.print("Old Angle: ");
     //    Serial.println(oldAngle);
     //    Serial.print("CurrentAngle: ");
     Serial.println(currentAngle);
   }
-  leftPID.SetMode(MANUAL);
+  leftPID.SetMode(AUTOMATIC);
   stopMovement();
   return true;
 }
 
 bool pivotLeftFifteen()
 {
-  resetEncoders();
   globalMovementState = LEFT_TURN;
   left_speed_val = DEFAULT_MOVEMENT_SPEED;
   right_speed_val = DEFAULT_MOVEMENT_SPEED;
@@ -218,7 +214,6 @@ bool pivotLeftFifteen()
 
 bool stopMovement()
 {
-  resetEncoders();
   globalMovementState = STOPPED;
   left_speed_val = DEFAULT_MOVEMENT_SPEED;
   right_speed_val = DEFAULT_MOVEMENT_SPEED;
@@ -352,27 +347,9 @@ void pollIrSensor()
   }
 }
 
-//void readMagData()
-//{
-//  int16_t magXRaw;
-//  int16_t magYRaw;
-//  int16_t magZRaw;
-//
-//  IMU._useSPIHS = true;
-//
-//  char buff[6];
-//  IMU.readRegisters(MAG_DATA_REG, 6, buff);
-//
-//  magXRaw = (((int16_t)buff[0]) << 8) | buff[1];
-//  magYRaw = (((int16_t)buff[2]) << 8) | buff[3];
-//  magZRaw = (((int16_t)buff[4]) << 8) | buff[5];
-//
-//  IMU._hx = (((float)(magXRaw) * IMU.getMagScaleFactorX() - IMU.getMagBiasX_uT()) * 1.0f;
-//
-//}
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(57600);
   delay(500);
 
   irrecv.enableIRIn(); // Start the receiver
@@ -386,6 +363,7 @@ void setup() {
   right_speed_val = 100;
 
   encoderSetup(rightEncoderPin1, rightEncoderPin2, leftEncoderPin1, leftEncoderPin2);
+  resetEncoders();
   leftPID.SetMode(AUTOMATIC);  //Turns PID on
   leftPID.SetSampleTime(50);   //How often in milliseconds the PID will be evaluated
 
@@ -400,13 +378,26 @@ void setup() {
   IMU.setMagCalX(magXBias, magXScale);
   IMU.setMagCalY(magYBias, magYScale);
   IMU.setMagCalZ(magZBias, magZScale);
+  //IMU.applySettings();
+
+  node.initNode();
+  node.advertise(lwheel);
+  node.advertise(rwheel);
 }
 
 //Main loop
 void loop()
 {
-  left_encoder_val = leftEncoderCount();
-  right_encoder_val = rightEncoderCount();
+  left_encoder_val = (int16_t)leftEncoderCount();
+  right_encoder_val = (int16_t)rightEncoderCount();
+  
+  lwheel_msg.data = left_encoder_val;
+  rwheel_msg.data = right_encoder_val;
+  lwheel.publish(&lwheel_msg);
+  rwheel.publish(&rwheel_msg);
+  node.spinOnce();
+  
   leftPID.Compute();
   pollIrSensor();
+  delay(100);
 }
